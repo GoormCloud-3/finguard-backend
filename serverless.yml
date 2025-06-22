@@ -1,0 +1,21 @@
+service: FinGuard-Backend
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  region: ap-northeast-2
+  vpc:
+    securityGroupIds:
+      - ${env:SG_DAO}
+    subnetIds:
+      - ${env:PRIVATE_SUBNET_1}
+      - ${env:PRIVATE_SUBNET_2}
+
+functions:
+  hello:
+    handler: handler.hello
+    role: ${env:LAMBDA_RDS_ROLE_ARN}
+    events:
+      - httpApi:
+          path: /
+          method: any
