@@ -1,19 +1,21 @@
-# "org" ensures this Service is used with the correct Serverless Framework Access Key.
-org: null
-# "app" enables Serverless Framework Dashboard features and sharing them with other Services.
-app: null
-# "service" is the name of this project. This will also be added to your AWS resource names.
 service: FinGuard-Backend
 
 provider:
   name: aws
   runtime: nodejs20.x
   region: ap-northeast-2
-  
+  vpc:
+    securityGroupIds:
+      - ${env:SG_DAO}
+    subnetIds:
+      - ${env:PRIVATE_SUBNET_1}
+      - ${env:PRIVATE_SUBNET_2}
+
 functions:
   hello:
     handler: handler.hello
+    role: ${env:LAMBDA_RDS_ROLE_ARN}
     events:
       - httpApi:
           path: /
-          method: get
+          method: any
