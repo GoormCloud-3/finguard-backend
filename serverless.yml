@@ -19,3 +19,6 @@ functions:
       - httpApi:
           path: /
           method: any
+      - httpApi:
+          path: /{proxy+}
+          method: any
