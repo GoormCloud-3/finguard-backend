@@ -8,6 +8,14 @@ const ssmClient = new SSMClient({ region });
 let hostName, dbUserName, database;
 let initialized = false;
 
+
+const createUser = require('./handlers/createUser');
+const signIn = require('./handlers/signIn');
+const createAccount = require('./handlers/createAccount');
+const getAccount = require('./handlers/getAccount');
+const createTransaction = require('./handlers/createTransaction');
+
+
 async function init() {
   if (initialized) return; // 여러 번 호출되지 않도록 방지
   try {
@@ -66,10 +74,44 @@ async function dbOps() {
   return res;
 }
 
+
+
 exports.hello = async (event) => {
-  const result = await dbOps();
-  return {
-    statusCode: 200,
-    body: JSON.stringify("The selected sum is: " + result[0].sum)
-  };
+  //const result = await dbOps();
+  const path = event.rawPath;
+  const method = event.requestContext.http.method;
+
+  // return {
+  //   statusCode: 200,
+  //   body: JSON.stringify("The selected sum is: " + result[0].sum)
+  // };
+
+  try {
+    if (path === '/users' && method === 'POST') {
+      return await createUser(event, dbOps);
+    } else if (path === '/users/sign-in' && method === 'POST') {
+      return await signIn(event, dbOps);
+    } else if (path === '/financial/accounts' && method === 'POST') {
+      return await createAccount(event, dbOps);
+    } else if (path.startsWith('/financial/accounts/') && method === 'GET') {
+      return await getAccount(event, dbOps);
+    } else if (path === '/banks/accounts/transactions' && method === 'POST') {
+      return await createTransaction(event, dbOps);
+    } else {
+      return {
+        statusCode: 404,
+        body: JSON.stringify({ error: 'Not Found' }),
+      };
+    }
+  } catch (err) {
+    console.error(err);
+    return {
+      statusCode: 500,
+      body: JSON.stringify({ error: 'Internal Server Error' }),
+    };
+  }
+
+
+
+
 };
