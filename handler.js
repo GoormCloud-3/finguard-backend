@@ -69,9 +69,9 @@ async function dbOps() {
   };
 
   const conn = await mysql.createConnection(connectionConfig);
-  const [res] = await conn.execute('SELECT ? + ? AS sum', [3, 2]);
-  await conn.end();
-  return res;
+  // const [res] = await conn.execute('SELECT ? + ? AS sum', [3, 2]);
+  // await conn.end();
+  return conn; // 커넥션 객체 반환, 쿼리 실행 및 종료는 호출자가 담당
 }
 
 
@@ -88,14 +88,16 @@ exports.hello = async (event) => {
 
   try {
     if (path === '/users' && method === 'POST') {
-      return await createUser(event, dbOps);
+      return await createUsers(event, dbOps);
     } else if (path === '/users/sign-in' && method === 'POST') {
       return await signIn(event, dbOps);
     } else if (path === '/financial/accounts' && method === 'POST') {
       return await createAccount(event, dbOps);
-    } else if (path.startsWith('/financial/accounts/') && method === 'GET') {
+    } else if (path.startsWith('/accounts/') && method === 'GET') {
       return await getAccount(event, dbOps);
-    } else if (path === '/banks/accounts/transactions' && method === 'POST') {
+    } else if (path.startsWith('/financial/accounts/') && method === 'GET') {
+      return await getAccountList(event, dbOps);
+    } else if (path.startsWith('/banks/accounts') && method === 'POST') {
       return await createTransaction(event, dbOps);
     } else {
       return {
