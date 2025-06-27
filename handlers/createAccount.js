@@ -7,7 +7,7 @@ function generateAccountNumber() {
   const part2 = String(Math.floor(Math.random() * 900) + 100);
   const part3 = String(Math.floor(Math.random() * 90000) + 10000);
   return `${part1}-${part2}-${part3}`;
-}
+} 
 
 async function generateUniqueAccountNumber(conn) {
   while (true) {
@@ -27,8 +27,8 @@ module.exports = async (event, dbOps) => {
     const { userSub, accountName, bankName } = JSON.parse(event.body);
 
     // 계좌번호 중복 검사 및 생성
-    const accountNumber = await generateUniqueAccountNumber(conn);
-    const accountId = uuidv4();
+    const accountNumber = await generateUniqueAccountNumber(conn); 
+    const accountId = uuidv4(); // 컴퓨터 시스템에서 중복되지 않는 고유한 값을 생성
 
     // 데이터베이스에 계좌 정보 저장
     await conn.execute(
