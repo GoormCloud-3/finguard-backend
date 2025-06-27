@@ -1,10 +1,10 @@
-// transaction.js
 'use strict';
 
 const { v4: uuidv4 } = require('uuid');
 const AWS = require('aws-sdk');
 const sqs = new AWS.SQS();
 const SQS_URL = process.env.SQS_URL;
+const { MinHeap, MaxHeap } = require('./heap');
 
 // Haversine distance 계산 함수
 function haversineDistance(coord1, coord2) {
@@ -19,25 +19,6 @@ function haversineDistance(coord1, coord2) {
   return R * c;
 }
 
-function insertToHeaps(minHeap, maxHeap, value) {
-  maxHeap.push(value);
-  maxHeap.sort((a, b) => b - a);
-  minHeap.sort((a, b) => a - b);
-
-  if (maxHeap.length > minHeap.length + 1) {
-    minHeap.push(maxHeap.shift());
-  } else if (minHeap.length > maxHeap.length) {
-    maxHeap.unshift(minHeap.pop());
-  }
-}
-
-function calculateMedian(minHeap, maxHeap) {
-  if (minHeap.length === 0 && maxHeap.length === 0) return 0;
-  if (minHeap.length === maxHeap.length) {
-    return (minHeap[minHeap.length - 1] + maxHeap[0]) / 2;
-  }
-  return maxHeap[0];
-}
 
 module.exports = async (event, dbOps) => {
   const conn = await dbOps();
@@ -50,7 +31,7 @@ module.exports = async (event, dbOps) => {
       money,
       used_card,
       description = '출금',
-      location
+      location //[12.2134, 21.3124] => [위도, 경도]
     } = JSON.parse(event.body);
 
     // 1. 사기 계좌 확인
@@ -67,13 +48,14 @@ module.exports = async (event, dbOps) => {
 
     // 2. 내 계좌 찾기
     const [[myAccRow]] = await conn.execute(
-      `SELECT account_id, balance, gps_location FROM accounts WHERE account_number = ?`,
+      //`SELECT account_id, balance, gps_location FROM accounts WHERE account_number = ?`,
+      `SELECT account_id, balance FROM accounts WHERE account_number = ?`,
       [my_account]
     );
-    if (!myAccRow || myAccRow.balance < money) {
+    if (myAccRow.balance < money) {
       return {
         statusCode: 400,
-        body: JSON.stringify({ error: "InsufficientBalanceOrNotFound" })
+        body: JSON.stringify({ error: "InsufficientBalance", message: "잔고가 부족합니다." })
       };
     }
 
@@ -89,50 +71,43 @@ module.exports = async (event, dbOps) => {
       };
     }
 
-    // 4. 마지막 출금 트랜잭션 찾기
+    // 4. 마지막 출금 트랜잭션 찾기 및 거리 비교. distance_from_home&&distance_from_last_transaction.
     const [[lastTxn]] = await conn.execute(
-      `SELECT transaction_gps FROM transactions WHERE account_id = ? AND type = 'debit' ORDER BY date DESC, time DESC LIMIT 1`,
+      `SELECT ST_Y(gps_location) AS lat, ST_X(gps_location) AS lon FROM transactions WHERE account_id = ? AND type = 'debit' ORDER BY date DESC, time DESC LIMIT 1`,
       [myAccRow.account_id]
     );
-    const gps_home = JSON.parse(myAccRow.gps_location);
+    const gps_lastTxn = lastTxn ? [lastTxn.lat, lastTxn.lon] : null; // null 체크
+
+
+    const [[{ lat, lon }]] = await conn.execute(
+      `SELECT ST_Y(gps_location) AS lat, ST_X(gps_location) AS lon FROM users WHERE user_sub = ?`,
+      [userSub]
+    );
+    const gps_home = [lat, lon]; // 내 집 위도, 경도
+
+    
     const distance_from_home = haversineDistance(gps_home, location);
     const distance_from_last_transaction = lastTxn
-      ? haversineDistance(JSON.parse(lastTxn.transaction_gps), location)
-      : 0;
+      ? haversineDistance(gps_lastTxn, location)
+      : 0;          //거래한 적 있으면 계산. 거래한 적 없으면 0 return.
 
-      //거래한 적 있으면 계산 아니면 0
 
-    // 5. 중앙값 계산
-    const [[medianRow]] = await conn.execute(
-      `SELECT min_heap, max_heap FROM median_prices WHERE account_number = ?`,
-      [my_account]
-    );
-    let minHeap = medianRow ? JSON.parse(medianRow.min_heap) : [];
-    let maxHeap = medianRow ? JSON.parse(medianRow.max_heap) : [];
-    insertToHeaps(minHeap, maxHeap, money);
-    const median = calculateMedian(minHeap, maxHeap);
-    const ratio_to_median_purchase_price = median === 0 ? 1.0 : money / median;
 
-    await conn.execute(
-      `REPLACE INTO median_prices (account_number, min_heap, max_heap) VALUES (?, ?, ?)`,
-      [my_account, JSON.stringify(minHeap), JSON.stringify(maxHeap)]
-    );
-
-    // 6. repeat_retailer 여부 확인
+    
+    // 5. repeat_retailer 여부 확인
     const [retailerRows] = await conn.execute(
       `SELECT 1 FROM transactions WHERE account_id = ? AND counter_account = ? LIMIT 1`,
       [myAccRow.account_id, counter_account]
     );
-    const repeat_retailer = retailerRows.length > 0 ? 1.0 : 0.0;
+    const repeat_retailer = retailerRows.length > 0 ? 1.0 : 0.0; // 거래한 적 있으면 1. 없으면 0.
     
 
-    const used_chip = used_card;
+    // 6. used_chip 카드 사용 여부 확인
+    const used_chip = used_card; // 카드 사용아니면 0. 카드 사용&&온라인 결제는 1.
 
     // 7. 트랜잭션 실행
     await conn.beginTransaction();
 
-    await conn.execute(`UPDATE accounts SET balance = balance - ? WHERE account_id = ?`, [money, myAccRow.account_id]);
-    await conn.execute(`UPDATE accounts SET balance = balance + ? WHERE account_id = ?`, [money, counterAccRow.account_id]);
 
     const now = new Date();
     const date = now.toISOString().split('T')[0];
@@ -140,15 +115,63 @@ module.exports = async (event, dbOps) => {
     const debitId = uuidv4();
     const creditId = uuidv4();
 
+    await conn.execute(`UPDATE accounts SET balance = balance - ? WHERE account_id = ?`, [money, myAccRow.account_id]);
+    await conn.execute(`UPDATE accounts SET balance = balance + ? WHERE account_id = ?`, [money, counterAccRow.account_id]);
+
+
     await conn.execute(
-      `INSERT INTO transactions (transaction_id, account_id, date, description, time, amount, type, transaction_gps, counter_account) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [debitId, myAccRow.account_id, date, description, time, -money, 'debit', JSON.stringify(location), counter_account]
+  `INSERT INTO transactions (
+    transaction_id, account_id, date, description, time, amount, type, transaction_gps, counter_account
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ST_PointFromText(?), ?)`,
+  [debitId, myAccRow.account_id, date, description, time, -money, 'debit', `POINT(${location[1]} ${location[0]})`, counter_account]
+);
+
+await conn.execute(
+  `INSERT INTO transactions (
+    transaction_id, account_id, date, description, time, amount, type, transaction_gps, counter_account
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ST_PointFromText(?), ?)`,
+  [creditId, counterAccRow.account_id, date, '입금', time, money, 'credit', `POINT(${location[1]} ${location[0]})`, my_account]
+);
+
+
+    // 8. 중앙값 계산 (거래 성공 후에 수행)
+    const [[medianRow]] = await conn.execute(
+      `SELECT min_heap, max_heap FROM median_prices WHERE account_number = ?`,
+      [my_account]
     );
+    const minHeap = new MinHeap(medianRow ? JSON.parse(medianRow.min_heap) : []);
+    const maxHeap = new MaxHeap(medianRow ? JSON.parse(medianRow.max_heap) : []);
+
+   
+    let medianBeforeInsert = 0;
+    if (minHeap.size() === 0 && maxHeap.size() === 0) {
+        medianBeforeInsert = 0;
+    } else if (minHeap.size() === maxHeap.size()) {
+      medianBeforeInsert = (minHeap.peek() + maxHeap.peek()) / 2;
+    } else {
+      medianBeforeInsert = maxHeap.peek();
+    }
+
+    const ratio_to_median_purchase_price = medianBeforeInsert === 0 ? 1.0 : money / medianBeforeInsert;
+
+
+    // ✅ 이후 money를 힙에 넣고 업데이트
+    if (maxHeap.size() === 0 || money < maxHeap.peek()) {
+      maxHeap.push(money);
+    } else {
+      minHeap.push(money);
+    }
+
+    // 힙 균형 조정
+    if (maxHeap.size() > minHeap.size() + 1) {
+      minHeap.push(maxHeap.pop());
+    } else if (minHeap.size() > maxHeap.size()) {
+      maxHeap.push(minHeap.pop());
+    }
+
     await conn.execute(
-      `INSERT INTO transactions (transaction_id, account_id, date, description, time, amount, type, transaction_gps, counter_account) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [creditId, counterAccRow.account_id, date, '입금', time, money, 'credit', JSON.stringify(location), my_account]
+      `REPLACE INTO median_prices (account_number, min_heap, max_heap) VALUES (?, ?, ?)`,
+      [my_account, JSON.stringify(minHeap.toArray()), JSON.stringify(maxHeap.toArray())]
     );
 
     await conn.commit();
@@ -170,10 +193,22 @@ module.exports = async (event, dbOps) => {
     return {
       statusCode: 201,
       body: JSON.stringify({
-        message: "Transfer completed",
-        transactionIds: { debit: debitId, credit: creditId }
+      message: "Transfer completed",
+      transactions: {
+        debit: {
+          transactionId: debitId,
+          accountId: myAccRow.account_id,
+          amount: -money,
+        },
+        credit: {
+          transactionId: creditId,
+          accountId: counterAccRow.account_id,  
+          amount: money,
+        }
+      }
       })
     };
+
   } catch (err) {
     console.error(err);
     await conn.rollback();
