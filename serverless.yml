@@ -22,3 +22,49 @@ functions:
       - httpApi:
           path: /{proxy+}
           method: any
+  
+  createUsers:
+    handler: handlers/createUsers    
+    role: ${env:LAMBDA_RDS_ROLE_ARN}    
+    events:
+      - httpApi:
+          path: /users
+          method: post
+  
+  signIn:
+    handler: handlers/signIn
+    events:
+      - httpApi:
+          path: /users/sign-in
+          method: post
+
+  getAccountList:
+    handler: handlers/getAccountList.getAccountList
+    role: ${env:LAMBDA_RDS_ROLE_ARN}
+    events:
+      - httpApi:
+          path: /financial/accounts/{userSub}
+          method: get
+  
+  createAccount:
+    handler: handlers/createAccount
+    role: ${env:LAMBDA_RDS_ROLE_ARN}
+    events:
+      - httpApi:
+          path: /financial/accounts
+          method: post
+  
+  getAccount:
+    handler: handlers/getAccount.getAccount
+    role: ${env:LAMBDA_RDS_ROLE_ARN}
+    events:
+      - httpApi:
+          path: /accounts/{accountId}
+          method: get
+
+  createTransaction:
+    handler: handlers/createTransaction
+    events:
+      - httpApi:
+          path: /banks/accounts
+          method: post
