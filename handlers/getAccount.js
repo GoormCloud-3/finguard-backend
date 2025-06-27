@@ -1,7 +1,7 @@
 'use strict';
 
-module.exports = async (event, dbOps) => {
-  const accountId = event.rawPath.split("/").pop();
+async function getAccount(event, dbOps) {
+  const accountId = event.pathParameters?.accountId;
   const conn = await dbOps();
 
   try {
@@ -58,4 +58,7 @@ module.exports = async (event, dbOps) => {
   } finally {
     await conn.end();
   }
-};
+}
+
+
+module.exports.getAccount = getAccount;
