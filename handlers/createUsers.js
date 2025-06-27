@@ -14,7 +14,7 @@ module.exports = async (event, dbOps) => {
   try {
     const data = JSON.parse(event.body);
     const {
-      username,
+      userID,
       password,
       finalServicePassword,
       name,
@@ -28,7 +28,7 @@ module.exports = async (event, dbOps) => {
     const cognitoClient = new CognitoIdentityProviderClient({ region: process.env.AWS_REGION });
     const signUpCommand = new SignUpCommand({
       ClientId: COGNITO_CLIENT_ID,
-      Username: username,
+      Username: userID,
       Password: password,
       UserAttributes: [
         { Name: "name", Value: name },
