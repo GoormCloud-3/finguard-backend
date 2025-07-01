@@ -1,9 +1,10 @@
-service: FinGuard-Backend
+service: FinGuard-Backend-test
 
 provider:
   name: aws
   runtime: nodejs20.x
   region: ap-northeast-2
+  role: ${env:API_LAMBDA_ROLE_ARN}
   vpc:
     securityGroupIds:
       - ${env:SG_DAO}
@@ -12,10 +13,23 @@ provider:
       - ${env:PRIVATE_SUBNET_2}
 
 functions:
-  hello:
-    handler: handler.hello
-    role: ${env:LAMBDA_RDS_ROLE_ARN}
+  rds:
+    handler: rds_handler.hello
+    role: ${env:API_LAMBDA_ROLE_ARN}
+  sqsPush:
+    handler: sqs_push_handler.send
+    role: ${env:API_LAMBDA_ROLE_ARN}
+  sqsReceiver:
+    handler: sqs_receive_handler.receive
+    role: ${env:SQS_LAMBDA_ROLE_ARN}
+    vpc:
+      subnetIds:
+        - ${env:PRIVATE_SUBNET_1}
+        - ${env:PRIVATE_SUBNET_2}
+      securityGroupIds:
+        - ${env:SG_ALERT}
     events:
-      - httpApi:
-          path: /
-          method: any
+      - sqs: ${env:SQS_ARN}
+  elasticache:
+    handler: elasticache_handler.handler
+    role: ${env:API_LAMBDA_ROLE_ARN}
