@@ -1,4 +1,8 @@
 #!/bin/bash
+set -e
+
+cd "$(dirname "$0")/.." || exit 1
+
 echo "개발 환경을 입력해주세요. (예: dev, prod, stage)"
 read -r ENV
 
