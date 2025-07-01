@@ -14,13 +14,13 @@ provider:
 
 functions:
   rds:
-    handler: rds_handler.hello
+    handler: handlers/rds_handler.hello
     role: ${env:API_LAMBDA_ROLE_ARN}
   sqsPush:
-    handler: sqs_push_handler.send
+    handler: handlers/sqs_push_handler.send
     role: ${env:API_LAMBDA_ROLE_ARN}
   sqsReceiver:
-    handler: sqs_receive_handler.receive
+    handler: handlers/sqs_receive_handler.receive
     role: ${env:SQS_LAMBDA_ROLE_ARN}
     vpc:
       subnetIds:
@@ -31,5 +31,5 @@ functions:
     events:
       - sqs: ${env:SQS_ARN}
   elasticache:
-    handler: elasticache_handler.handler
+    handler: handlers/elasticache_handler.handler
     role: ${env:API_LAMBDA_ROLE_ARN}
