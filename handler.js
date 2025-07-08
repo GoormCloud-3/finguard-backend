@@ -12,9 +12,9 @@ async function init() {
   if (initialized) return; // 여러 번 호출되지 않도록 방지
   try {
     [hostName, dbUserName, database] = await Promise.all([
-      getParam("/finguard/finance/rds_proxy", false),
-      getParam("/finguard/finance/rds_username", false),
-      getParam("/finguard/finance/rds_database", false),
+      getParam("/finguard/dev/finance/rds_proxy_hostname", false),
+      getParam("/finguard/dev/finance/rds_db_username", false),
+      getParam("/finguard/dev/finance/rds_db_name", false),
     ]);
     initialized = true;
   } catch (err) {
@@ -42,13 +42,19 @@ async function createAuthToken() {
     username: dbUserName,
   });
 
-  return await signer.getAuthToken();
+  return signer.getAuthToken();
 }
 
 async function dbOps() {
   await init(); // 파라미터 미리 초기화
-
+  console.log("DB 연결 시작");
   const token = await createAuthToken();
+
+  console.log("hostName: ", hostName);
+  console.log("dbUserName: ", dbUserName);
+  console.log("token: ", token);
+  console.log("database: ", database);
+  console.log("region: ", region);
 
   const connectionConfig = {
     host: hostName,
@@ -56,20 +62,23 @@ async function dbOps() {
     password: token,
     database: database,
     ssl: {
-      rejectUnauthorized: true
-    }
+      rejectUnauthorized: true,
+    },
   };
 
-  const conn = await mysql.createConnection(connectionConfig);
-  const [res] = await conn.execute('SELECT ? + ? AS sum', [3, 2]);
-  await conn.end();
-  return res;
+  const conn = await mysql.createConnection({
+    host: hostName,
+    user: dbUserName,
+    password: token,
+    database: database,
+    ssl: "Amazon RDS",
+    port: 3306,
+    authPlugins: {
+      mysql_clear_password: () => () => Buffer.from(token + "\0"),
+    },
+  });
+  return conn;
 }
 
-exports.hello = async (event) => {
-  const result = await dbOps();
-  return {
-    statusCode: 200,
-    body: JSON.stringify("The selected sum is: " + result[0].sum)
-  };
-};
+module.exports = dbOps;
+
