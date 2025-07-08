@@ -4,6 +4,9 @@ provider:
   name: aws
   runtime: nodejs20.x
   region: ap-northeast-2
+  tracing:
+    lambda: true
+    apiVersion: true    
   vpc:
     securityGroupIds:
       - ${env:SG_DAO}
@@ -11,11 +14,78 @@ provider:
       - ${env:PRIVATE_SUBNET_1}
       - ${env:PRIVATE_SUBNET_2}
 
+
+plugins:
+  - serverless-dotenv-plugin
+
+
 functions:
   hello:
-    handler: handler.hello
-    role: ${env:LAMBDA_RDS_ROLE_ARN}
+    handler: rds_handler.hello
+    role: ${env:API_LAMBDA_ROLE_ARN}
     events:
       - httpApi:
           path: /
           method: any
+  sqsReceiver:
+    handler: sqs_receive_handler.receive
+    role: ${env:SQS_LAMBDA_ROLE_ARN}
+    vpc:
+      subnetIds:
+        - ${env:PRIVATE_SUBNET_1}
+        - ${env:PRIVATE_SUBNET_2}
+      securityGroupIds:
+        - ${env:SG_ALERT}
+    events:
+      - sqs: ${env:SQS_ARN}
+  elasticache:
+    handler: elasticache_handler.handler
+    role: ${env:API_LAMBDA_ROLE_ARN}
+
+  createUsers:
+    handler: handlers/createUsers.handler
+    role: ${env:API_LAMBDA_ROLE_ARN}
+    events:
+      - httpApi:
+          path: /users
+          method: post
+  
+  signIn:
+    handler: handlers/signIn.handler
+    role: ${env:API_LAMBDA_ROLE_ARN}
+    events:
+      - httpApi:
+          path: /users/sign-in
+          method: post
+
+  getAccountList:
+    handler: handlers/getAccountList.handler
+    role: ${env:API_LAMBDA_ROLE_ARN}
+    events:
+      - httpApi:
+          path: /financial/accounts/{userSub}
+          method: get
+  
+  createAccount:
+    handler: handlers/createAccount.handler
+    role: ${env:API_LAMBDA_ROLE_ARN}
+    events:
+      - httpApi:
+          path: /financial/accounts
+          method: post
+  
+  getAccount:
+    handler: handlers/getAccount.handler
+    role: ${env:API_LAMBDA_ROLE_ARN}
+    events:
+      - httpApi:
+          path: /accounts/{accountId}
+          method: get
+
+  createTransaction:
+    handler: handlers/createTransaction.handler
+    role: ${env:API_LAMBDA_ROLE_ARN}
+    events:
+      - httpApi:
+          path: /banks/accounts
+          method: post
