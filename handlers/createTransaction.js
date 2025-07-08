@@ -63,6 +63,11 @@ module.exports.handler = async (event, context) => {
 
   try {
     await init();
+    const subsegment = segment.addNewSubsegment('LAMBDA::Transaction');
+
+    subsegment.addMetadata('eventTime', new Date().toISOString());
+    subsegment.addMetadata('traceId', traceId);
+    subsegment.addMetadata('eventType', 'TRANSACTION_START');
 
     const {
       userSub,
@@ -221,19 +226,32 @@ module.exports.handler = async (event, context) => {
       repeat_retailer,
       used_chip,
     ];
+    subsegment.addMetadata('eventTime', new Date().toISOString());
+    subsegment.addMetadata('traceId', traceId);
+    subsegment.addMetadata('eventType', 'SQS_SEND_START');
+
 
     try {
       const command = new SendMessageCommand({
         QueueUrl: queueUrl,
-        MessageBody: JSON.stringify({ traceId, features }),
+        MessageBody: JSON.stringify({ traceId: traceId, features }),
         MessageGroupId: "trade-group", //  FIFO 큐에 필수
         MessageDeduplicationId: traceId, //  중복 제거용 
       });
       const result = await sqs.send(command);
-      console.log(`[${traceId}] ✅ SQS 메시지 전송 완료, MessageId: ${result.MessageId}`);
+
+      console.log(`[${traceId}] SQS 메시지 전송 완료, MessageId: ${result.MessageId}`);
+      subsegment.addMetadata('messageId', result.MessageId);
+      subsegment.addMetadata('sendResult', result);
+      subsegment.close();
+
     } catch (err) {
       console.error(`[${traceId}] ❌ SQS 메시지 전송 실패:`, err);
+      subsegment.addError(err);
+      subsegment.close();
+
       await conn.rollback();
+      
       return {
         statusCode: 500,
         body: JSON.stringify({ error: "SqsSendError", message: "SQS 메시지 전송 실패로 거래가 취소되었습니다." })
