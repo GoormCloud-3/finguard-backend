@@ -67,38 +67,39 @@ exports.receive = async (event) => {
 
 
 
-      return new Promise((resolve) => {
+      return new Promise((resolve, reject) => {
         AWSXRay.captureAsyncFunc(`fromSqsToSageMaker_Inference_${traceId}`, async (subsegment) => {
           try {
-            subsegment.addAnnotation("traceId", traceId);
-            subsegment.addMetadata("features", features);
 
             console.log("from sqs features:", features);
 
             const command = new InvokeEndpointCommand({
               EndpointName: sageMakerEndpoint,
-              Body: JSON.stringify({ instances: [features] }),
+              Body: JSON.stringify({ features }),
               ContentType: "application/json",
             });
 
             const response = await sagemakerClient.send(command);
             const result = JSON.parse(Buffer.from(response.Body).toString('utf-8'));
+            const { prediction, probability, threshold, input } = result;
+
+            if (prediction === null) throw new Error("SageMaker 예측값이 없습니다.");
+
 
 
             subsegment.addMetadata('eventTime', new Date().toISOString());
             subsegment.addMetadata('traceId', traceId);
             subsegment.addMetadata('messageId', result.MessageId);
             subsegment.addMetadata('sendResult', result);
+
+
             subsegment.addMetadata('eventType', 'SAGEMAKER_SEND_FINISH');
-
-            const prediction = Array.isArray(result?.predictions) ? result.predictions[0] : null;
-            if (prediction === null) throw new Error("SageMaker 예측값이 없습니다.");
-
             subsegment.addMetadata("predictionResult", prediction);
+
             console.log(`[${traceId}] ✅ 예측 결과:`, prediction);
 
-            // ✅ 조건부 SNS 전송 (0.8 이상일 때만)
-            if (prediction >= 0.8) {
+            // 조건부 SNS 전송 (0.8 이상일 때만)
+            if (prediction === 1) {
               try {
                 subsegment.addMetadata('eventTime', new Date().toISOString());
                 subsegment.addMetadata('traceId', traceId);
@@ -124,7 +125,7 @@ exports.receive = async (event) => {
               subsegment.addMetadata('eventTime', new Date().toISOString());
               subsegment.addMetadata('traceId', traceId);
               subsegment.addMetadata('eventType', 'SNS_SEND_EXIT');
-              console.log(`[${traceId}] ℹ️ 예측값 ${prediction}이 기준치 미만이라 SNS 전송 생략`);
+              console.log(`[${traceId}] 예측값 ${prediction}이 기준치 미만이라 SNS 전송 생략`);
             }
 
 
