@@ -14,14 +14,13 @@ provider:
       - ${env:PRIVATE_SUBNET_1}
       - ${env:PRIVATE_SUBNET_2}
 
-
 plugins:
   - serverless-dotenv-plugin
 
 
 functions:
   hello:
-    handler: rds_handler.hello
+    handler: handler.hello
     role: ${env:API_LAMBDA_ROLE_ARN}
     events:
       - httpApi:
@@ -30,14 +29,8 @@ functions:
   sqsReceiver:
     handler: sqs_receive_handler.receive
     role: ${env:SQS_LAMBDA_ROLE_ARN}
-    vpc:
-      subnetIds:
-        - ${env:PRIVATE_SUBNET_1}
-        - ${env:PRIVATE_SUBNET_2}
-      securityGroupIds:
-        - ${env:SG_ALERT}
-    events:
-      - sqs: ${env:SQS_ARN}
+    vpc: ~
+
   elasticache:
     handler: elasticache_handler.handler
     role: ${env:API_LAMBDA_ROLE_ARN}
@@ -49,29 +42,21 @@ functions:
       - httpApi:
           path: /users
           method: post
-  
-  signIn:
-    handler: handlers/signIn.handler
-    role: ${env:API_LAMBDA_ROLE_ARN}
-    events:
-      - httpApi:
-          path: /users/sign-in
-          method: post
 
   getAccountList:
     handler: handlers/getAccountList.handler
     role: ${env:API_LAMBDA_ROLE_ARN}
     events:
       - httpApi:
-          path: /financial/accounts/{userSub}
-          method: get
+          path: /financial/accounts
+          method: post
   
   createAccount:
     handler: handlers/createAccount.handler
     role: ${env:API_LAMBDA_ROLE_ARN}
     events:
       - httpApi:
-          path: /financial/accounts
+          path: /financial/createAccounts
           method: post
   
   getAccount:
