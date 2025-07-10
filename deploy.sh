@@ -78,6 +78,7 @@ if [[ -z "$SG_DAO" || -z "$SG_ALERT" || -z "$PRIVATE_SUBNET_1" || -z "$PRIVATE_S
 fi
 
 
+
 # 🚀 배포 여부 확인
 echo "배포할 거면 y를 입력하세요"
 read -r answer
