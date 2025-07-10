@@ -4,8 +4,9 @@ const { v4: uuidv4 } = require('uuid');
 const { MinHeap, MaxHeap } = require('./heap');
 const dbOps = require('../handler');
 const AWSXRay = require('aws-xray-sdk');
-const segment = AWSXRay.getSegment();
-const traceId = segment.trace_id; // 현재 traceId
+const AWS = AWSXRay.captureAWS(require('aws-sdk'));
+
+
 
 
 const { SQSClient, SendMessageCommand } = require("@aws-sdk/client-sqs");
@@ -60,15 +61,13 @@ function haversineDistance(coord1, coord2) {
 
 module.exports.handler = async (event, context) => {
   const conn = await dbOps();
+  //const traceId = uuidv4(); // 고유한 트랜잭션 trace ID 생성
+  const segment = AWSXRay.getSegment();
+  const traceId = segment.trace_id;
+  console.log("🚨createTransaction :: traceId :: ", traceId);
 
   try {
     await init();
-    const subsegment = segment.addNewSubsegment('LAMBDA::Transaction');
-
-    subsegment.addMetadata('eventTime', new Date().toISOString());
-    subsegment.addMetadata('traceId', traceId);
-    subsegment.addMetadata('eventType', 'TRANSACTION_START');
-
     const {
       userSub,
       my_account,
@@ -78,6 +77,11 @@ module.exports.handler = async (event, context) => {
       description = '출금',
       location //[12.2134, 21.3124] => [위도, 경도]
     } = JSON.parse(event.body);
+
+
+    const fraudCheckSubsegment = segment.addNewSubsegment('CREATE TRANSACTION LAMBDA :: Check 1st Fraud Account');
+    fraudCheckSubsegment.addMetadata('traceId', traceId);
+    fraudCheckSubsegment.addMetadata('startTime', new Date().toISOString());
 
     // 1. 사기 계좌 확인
     const [fraudCheck] = await conn.execute(
@@ -90,6 +94,15 @@ module.exports.handler = async (event, context) => {
         body: JSON.stringify({ error: "FraudulentAccount", message: "사기 계좌로 송금할 수 없습니다." })
       };
     }
+    fraudCheckSubsegment.addMetadata('finishTime', new Date().toISOString());
+    fraudCheckSubsegment.close();        // ✅ 반드시 닫기!
+
+
+
+
+    const myAccountCheckSubsegment = segment.addNewSubsegment('CREATE TRANSACTION LAMBDA :: Check My Account');
+    myAccountCheckSubsegment.addMetadata('traceId', traceId);
+    myAccountCheckSubsegment.addMetadata('startTime', new Date().toISOString());
 
     // 2. 내 계좌 찾기
     const [[myAccRow]] = await conn.execute(
@@ -103,7 +116,14 @@ module.exports.handler = async (event, context) => {
         body: JSON.stringify({ error: "InsufficientBalance", message: "잔고가 부족합니다." })
       };
     }
+    myAccountCheckSubsegment.addMetadata('finishTime', new Date().toISOString());
+    myAccountCheckSubsegment.close();        // ✅ 반드시 닫기!
 
+
+
+    const counterAccountCheckSubsegment = segment.addNewSubsegment('CREATE TRANSACTION LAMBDA :: Check Counter Account');
+    counterAccountCheckSubsegment.addMetadata('traceId', traceId);
+    counterAccountCheckSubsegment.addMetadata('startTime', new Date().toISOString());
     // 3. 상대방 계좌 찾기
     const [[counterAccRow]] = await conn.execute(
       `SELECT account_id FROM accounts WHERE accountNumber = ?`,
@@ -115,7 +135,14 @@ module.exports.handler = async (event, context) => {
         body: JSON.stringify({ error: "CounterAccountNotFound" })
       };
     }
+    counterAccountCheckSubsegment.addMetadata('finishTime', new Date().toISOString());
+    counterAccountCheckSubsegment.close();        // ✅ 반드시 닫기!
 
+
+
+    const findLastTransactionAndCompareDistanceSubsegment = segment.addNewSubsegment('CREATE TRANSACTION LAMBDA :: Find Last Transaction and Compare Distance');
+    findLastTransactionAndCompareDistanceSubsegment.addMetadata('traceId', traceId);
+    findLastTransactionAndCompareDistanceSubsegment.addMetadata('startTime', new Date().toISOString());
     // 4. 마지막 출금 트랜잭션 찾기 및 거리 비교. distance_from_home&&distance_from_last_transaction.
     const [[lastTxn]] = await conn.execute(
       `SELECT ST_Y(transaction_gps) AS lat, ST_X(transaction_gps) AS lon FROM transactions WHERE account_id = ? AND type = 'debit' ORDER BY date DESC, time DESC LIMIT 1`,
@@ -136,7 +163,16 @@ module.exports.handler = async (event, context) => {
       ? haversineDistance(gps_lastTxn, location)
       : 0;          //거래한 적 있으면 계산. 거래한 적 없으면 0 return.
 
+    findLastTransactionAndCompareDistanceSubsegment.addMetadata('finishTime', new Date().toISOString());
+    findLastTransactionAndCompareDistanceSubsegment.close();        // ✅ 반드시 닫기!
 
+
+
+
+
+    const repeatRetailerCheckSubsegment = segment.addNewSubsegment('CREATE TRANSACTION LAMBDA :: Check repeat_retailer');
+    repeatRetailerCheckSubsegment.addMetadata('traceId', traceId);
+    repeatRetailerCheckSubsegment.addMetadata('startTime', new Date().toISOString());
     // 5. repeat_retailer 여부 확인
     const [retailerRows] = await conn.execute(
       `SELECT 1 FROM transactions WHERE account_id = ? AND counter_account = ? LIMIT 1`,
@@ -144,10 +180,20 @@ module.exports.handler = async (event, context) => {
     );
     const repeat_retailer = retailerRows.length > 0 ? 1.0 : 0.0; // 거래한 적 있으면 1. 없으면 0.
 
+    repeatRetailerCheckSubsegment.addMetadata('finishTime', new Date().toISOString());
+    repeatRetailerCheckSubsegment.close();        // ✅ 반드시 닫기!
+
+
+
+
 
     // 6. used_chip 카드 사용 여부 확인
     const used_chip = used_card; // 카드 사용아니면 0. 카드 사용&&온라인 결제는 1.
 
+
+    const startTransactionSubsegment = segment.addNewSubsegment('CREATE TRANSACTION LAMBDA :: Start Transaction');
+    startTransactionSubsegment.addMetadata('traceId', traceId);
+    startTransactionSubsegment.addMetadata('startTime', new Date().toISOString());
     // 7. 트랜잭션 실행
     await conn.beginTransaction();
 
@@ -176,6 +222,16 @@ module.exports.handler = async (event, context) => {
       [creditId, counterAccRow.account_id, date, '입금', time, money, 'credit', `POINT(${location[1]} ${location[0]})`, my_account]
     );
 
+
+    startTransactionSubsegment.addMetadata('finishTime', new Date().toISOString());
+    startTransactionSubsegment.close();        // ✅ 반드시 닫기!
+
+
+
+
+    const calculateMedianSubsegment = segment.addNewSubsegment('CREATE TRANSACTION LAMBDA :: calculate Median');
+    calculateMedianSubsegment.addMetadata('traceId', traceId);
+    calculateMedianSubsegment.addMetadata('startTime', new Date().toISOString());
 
     // 8. 중앙값 계산 (거래 성공 후에 수행)
     const [[medianRow]] = await conn.execute(
@@ -216,8 +272,15 @@ module.exports.handler = async (event, context) => {
       `REPLACE INTO median_prices (account_number, minHeap, maxHeap) VALUES (?, ?, ?)`,
       [my_account, JSON.stringify(minHeap.toArray()), JSON.stringify(maxHeap.toArray())]
     );
+    calculateMedianSubsegment.addMetadata('finishTime', new Date().toISOString());
+    calculateMedianSubsegment.close();        // ✅ 반드시 닫기!
 
 
+
+
+    const sendSQSSubsegment = segment.addNewSubsegment('CREATE TRANSACTION LAMBDA :: send SQS');
+    sendSQSSubsegment.addMetadata('traceId', traceId);
+    sendSQSSubsegment.addMetadata('startTime', new Date().toISOString());
     // 8. SQS 전송
     const features = [
       distance_from_home,
@@ -226,36 +289,35 @@ module.exports.handler = async (event, context) => {
       repeat_retailer,
       used_chip,
     ];
-    subsegment.addMetadata('eventTime', new Date().toISOString());
-    subsegment.addMetadata('traceId', traceId);
-    subsegment.addMetadata('eventType', 'SQS_SEND_START');
 
+    const dedupId = `${traceId}-${Date.now()}`;  // 현재 시간 밀리초 붙이기
 
     try {
       const command = new SendMessageCommand({
         QueueUrl: queueUrl,
-        MessageBody: JSON.stringify({ traceId: traceId, features }),
-        MessageGroupId: "trade-group", //  FIFO 큐에 필수
-        MessageDeduplicationId: traceId, //  중복 제거용 
+        MessageBody: JSON.stringify({ userSub, traceId, features }),
+        MessageGroupId: "trade-group", // FIFO 큐
+        MessageDeduplicationId: dedupId, // 고유 traceId 필요
       });
       const result = await sqs.send(command);
 
       console.log(`[${traceId}] SQS 메시지 전송 완료, MessageId: ${result.MessageId}`);
-      subsegment.addMetadata('messageId', result.MessageId);
-      subsegment.addMetadata('sendResult', result);
-      subsegment.close();
+      sendSQSSubsegment.addMetadata('messageId', result.MessageId);
+      sendSQSSubsegment.addMetadata('sendResult', result);
 
     } catch (err) {
       console.error(`[${traceId}] ❌ SQS 메시지 전송 실패:`, err);
-      subsegment.addError(err);
-      subsegment.close();
+      sendSQSSubsegment.addError(err);
 
       await conn.rollback();
-      
+
       return {
         statusCode: 500,
         body: JSON.stringify({ error: "SqsSendError", message: "SQS 메시지 전송 실패로 거래가 취소되었습니다." })
       };
+    } finally {
+      sendSQSSubsegment.addMetadata('finishTime', new Date().toISOString());
+      sendSQSSubsegment.close();        // ✅ 반드시 닫기!
     }
 
     await conn.commit();
