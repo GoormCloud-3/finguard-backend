@@ -1,30 +1,63 @@
+
 const AWSXRay = require('aws-xray-sdk');
 const { GetParameterCommand, SSMClient } = require("@aws-sdk/client-ssm");
 const { SageMakerRuntimeClient, InvokeEndpointCommand } = require("@aws-sdk/client-sagemaker-runtime");
 const { SNSClient, PublishCommand } = require("@aws-sdk/client-sns");
+const { DynamoDBClient, GetItemCommand } = require("@aws-sdk/client-dynamodb");
 
+
+// 공통 설정 및 클라이언트 생성 (1회만)
 const region = "ap-northeast-2";
 const ssmClient = new SSMClient({ region });
+const ddbClient = new DynamoDBClient({ region });
 const sagemakerClient = new SageMakerRuntimeClient({ region });
 const snsClient = new SNSClient({ region });
 
-const segment = AWSXRay.getSegment(); // 현재 Lambda의 기본 segment
-
-
 let sageMakerEndpoint;
-let topicArn; //SNS topicARN
+let topicArn;
 let initialized = false;
+let tableName;
 
-async function init() {
-  if (initialized) return;
-  try {
-    sageMakerEndpoint = await getParam("/finguard/dev/finance/fraud_sage_maker_endpoint_name", false);
-    topicArn = await getParam("/finguard/dev/sns_arn_fraud_alert", false);
-    initialized = true;
-  } catch (err) {
-    console.error("SSM 파라미터 조회 실패:", err);
-    throw err;
-  }
+
+
+
+async function getFcmTokens(sub) {
+  const getCmd = new GetItemCommand({
+    TableName: tableName,
+    Key: { user_id: { S: sub } },
+    ProjectionExpression: 'fcmTokens',
+  });
+
+  const result = await ddbClient.send(getCmd);
+  const tokens = result.Item?.fcmTokens?.L?.map(t => t.S) || [];
+  console.log(`✅ FCM 토큰 ${tokens.length}개 조회됨:`, tokens);
+  return tokens;
+}
+
+async function invokeSageMaker(endpoint, features) {
+  console.log("📡 invokeSageMaker: sending features to endpoint", endpoint);
+  console.log("📤 features:", JSON.stringify(features));
+  const command = new InvokeEndpointCommand({
+    EndpointName: endpoint,
+    Body: JSON.stringify({ features }),
+    ContentType: "application/json",
+  });
+  const response = await sagemakerClient.send(command);
+  const result = JSON.parse(Buffer.from(response.Body).toString("utf-8"));
+  console.log("✅ SageMaker response received:", result);
+  return result;
+}
+
+async function publishSns(topicArn, fcmTokens, traceId) {
+  console.log(`🔔 publishSns: fcmTokens = ${fcmTokens}`);
+  console.log(`🔔 publishSns: traceId = ${traceId}`);
+  const command = new PublishCommand({
+    TopicArn: topicArn,
+    Message: JSON.stringify({ fcmTokens, traceId }),
+  });
+  const result = await snsClient.send(command);
+  console.log("✅ SNS publish result:", result);
+  return result;
 }
 
 async function getParam(name, withDecryption) {
@@ -38,122 +71,89 @@ async function getParam(name, withDecryption) {
   return response.Parameter.Value;
 }
 
+async function init() {
+  if (initialized) return;
+  console.log("⚙️ Initializing Lambda...");
+  sageMakerEndpoint = await getParam("/finguard/dev/finance/fraud_sage_maker_endpoint_name");
+  topicArn = await getParam("/finguard/dev/finance/alert_sns_topic");
+  tableName = await getParam("/finguard/dev/finance/notification_table_name");
+
+  console.log("✅ SageMaker Endpoint:", sageMakerEndpoint);
+  console.log("✅ SNS Topic ARN:", topicArn);
+  console.log("✅ DynamoDB 테이블명:", tableName);
+
+  initialized = true;
+  console.log("✅ Initialization complete");
+}
+
+
 exports.receive = async (event) => {
-  //await init();
-
-  console.log("📩 SQS 메시지 수신");
-  const subsegment = segment.addNewSubsegment('LAMBDA::SQS_SAGEMAKER_SNS');
-  subsegment.addMetadata('eventTime', new Date().toISOString());
-  subsegment.addMetadata('eventType', 'SQS_SEND_FINISH');
+  console.log("📥 Lambda triggered with event:", JSON.stringify(event));
+  const segment = AWSXRay.getSegment();
 
 
-  const messages = (event.Records || []).map((record) => {
-    const body = JSON.parse(record.body);
-    return {
-      traceId: body.traceId,
-      features: body.features,
-    };
-  });
+
+  await init();
+  const messages = (event.Records || []).map(r => JSON.parse(r.body));
+  console.log(`📦 Total messages received: ${messages.length}`);
 
   const results = await Promise.allSettled(
-    messages.map((msg) => {
-      const { traceId, features } = msg;
-
-      subsegment.addMetadata('eventTime', new Date().toISOString());
-      subsegment.addMetadata('traceId', traceId);
-      subsegment.addMetadata('eventType', 'SAGEMAKER_SEND_START');
+    messages.map(msg =>
+      AWSXRay.captureAsyncFunc(`fromSqsToSageMaker_${msg.traceId}`, async (sub) => {
+        try {
+          sub.addMetadata('startTime', new Date().toISOString());
 
 
 
+          console.log(`🚀1️⃣ Processing message with traceId: ${msg.traceId}`);
+          console.log(`🚀2️⃣ Processing message with userSub: ${msg.userSub}`);
+          const result = await invokeSageMaker(sageMakerEndpoint, msg.features);
 
+          sub.addMetadata("traceId", msg.traceId);
+          sub.addMetadata("prediction", result.prediction);
 
-      return new Promise((resolve, reject) => {
-        AWSXRay.captureAsyncFunc(`fromSqsToSageMaker_Inference_${traceId}`, async (subsegment) => {
-          try {
+          console.log("📢prediction", result.prediction);
+          console.log("📢probability", result.probability);
 
-            console.log("from sqs features:", features);
-
-            const command = new InvokeEndpointCommand({
-              EndpointName: sageMakerEndpoint,
-              Body: JSON.stringify({ features }),
-              ContentType: "application/json",
-            });
-
-            const response = await sagemakerClient.send(command);
-            const result = JSON.parse(Buffer.from(response.Body).toString('utf-8'));
-            const { prediction, probability, threshold, input } = result;
-
-            if (prediction === null) throw new Error("SageMaker 예측값이 없습니다.");
+          if (result.prediction === 1) {
+            console.log(`🔔 Sending alert for traceId ${msg.traceId}`);
+            const fcmTokens = await getFcmTokens(msg.userSub);
+            console.log("📱 Retrieved FCM tokens:", fcmTokens);
 
 
 
-            subsegment.addMetadata('eventTime', new Date().toISOString());
-            subsegment.addMetadata('traceId', traceId);
-            subsegment.addMetadata('messageId', result.MessageId);
-            subsegment.addMetadata('sendResult', result);
+            await publishSns(topicArn, fcmTokens, msg.traceId);
 
 
-            subsegment.addMetadata('eventType', 'SAGEMAKER_SEND_FINISH');
-            subsegment.addMetadata("predictionResult", prediction);
-
-            console.log(`[${traceId}] ✅ 예측 결과:`, prediction);
-
-            // 조건부 SNS 전송 (0.8 이상일 때만)
-            if (prediction === 1) {
-              try {
-                subsegment.addMetadata('eventTime', new Date().toISOString());
-                subsegment.addMetadata('traceId', traceId);
-                subsegment.addMetadata('eventType', 'SNS_SEND_START');
-
-                const snsCommand = new PublishCommand({
-                  TopicArn: topicArn,
-                  Message: JSON.stringify({ traceId, prediction }),
-                });
-                await snsClient.send(snsCommand);
-                console.log(`[${traceId}] 🔔 SNS 전송 완료 (score ≥ 0.8)`);
-
-                subsegment.addMetadata('eventTime', new Date().toISOString());
-                subsegment.addMetadata('traceId', traceId);
-                subsegment.addMetadata('eventType', 'SNS_SEND_FINISH');
-
-              } catch (snsErr) {
-                subsegment.addError(snsErr);
-
-                console.error(`[${traceId}] ❌ SNS 전송 실패:`, snsErr);
-              }
-            } else {
-              subsegment.addMetadata('eventTime', new Date().toISOString());
-              subsegment.addMetadata('traceId', traceId);
-              subsegment.addMetadata('eventType', 'SNS_SEND_EXIT');
-              console.log(`[${traceId}] 예측값 ${prediction}이 기준치 미만이라 SNS 전송 생략`);
-            }
-
-
-
-            resolve({ traceId, status: "fulfilled", prediction });
-
-          } catch (err) {
-            subsegment.addError(err);
-            console.error(`[${traceId}] ❌ 처리 실패:`, err);
-            resolve({ traceId, status: "rejected", reason: err.message });
-          } finally {
-            subsegment.close();
+            sub.addMetadata("sns", "sent");
+          } else {
+            console.log(`ℹ️ Prediction below threshold for traceId ${msg.traceId}`);
+            sub.addMetadata("sns", "skipped");
           }
-        });
-      });
-    })
+
+          sub.addMetadata('finishTime', new Date().toISOString());
+          return { traceId: msg.traceId, status: "fulfilled" };
+          
+        } catch (err) {
+          console.error(`❌ Error processing traceId ${msg.traceId}:`, err);
+          sub.addError(err);
+          return { traceId: msg.traceId, status: "rejected", reason: err.message };
+        } finally {
+          sub.close();
+        }
+      })
+    )
   );
 
   const failed = results.filter(r => r.status === "rejected");
   if (failed.length > 0) {
     console.error(`❌ ${failed.length}개의 메시지 처리 실패`, failed);
+    throw new Error(`${failed.length} 메시지 처리 실패`);
   }
 
+  console.log("✅ 모든 메시지 정상 처리 완료");
   return {
     statusCode: 200,
-    body: JSON.stringify({
-      received: messages.length,
-      failed: failed.length,
-    }),
+    body: JSON.stringify({ received: messages.length }),
   };
 };
