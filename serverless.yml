@@ -4,9 +4,11 @@ provider:
   name: aws
   runtime: nodejs20.x
   region: ap-northeast-2
+  httpApi:
+    id: ${env:HTTP_API_ID}
   tracing:
     lambda: true
-    apiVersion: true    
+    apiVersion: truea
   vpc:
     securityGroupIds:
       - ${env:SG_DAO}
@@ -14,18 +16,7 @@ provider:
       - ${env:PRIVATE_SUBNET_1}
       - ${env:PRIVATE_SUBNET_2}
 
-plugins:
-  - serverless-dotenv-plugin
-
-
 functions:
-  hello:
-    handler: handler.hello
-    role: ${env:API_LAMBDA_ROLE_ARN}
-    events:
-      - httpApi:
-          path: /
-          method: any
   sqsReceiver:
     handler: sqs_receive_handler.receive
     role: ${env:SQS_LAMBDA_ROLE_ARN}
@@ -50,7 +41,7 @@ functions:
       - httpApi:
           path: /financial/accounts
           method: post
-  
+
   createAccount:
     handler: handlers/createAccount.handler
     role: ${env:API_LAMBDA_ROLE_ARN}
@@ -58,7 +49,7 @@ functions:
       - httpApi:
           path: /financial/createAccounts
           method: post
-  
+
   getAccount:
     handler: handlers/getAccount.handler
     role: ${env:API_LAMBDA_ROLE_ARN}
