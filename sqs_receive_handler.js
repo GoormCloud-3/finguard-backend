@@ -19,8 +19,6 @@ let initialized = false;
 let tableName;
 
 
-
-
 async function getFcmTokens(sub) {
   const getCmd = new GetItemCommand({
     TableName: tableName,
@@ -87,28 +85,34 @@ async function init() {
 }
 
 
+const AWSXRay = require('aws-xray-sdk-core');
+const AWS = AWSXRay.captureAWS(require('aws-sdk'));
+
 exports.receive = async (event) => {
   console.log("📥 Lambda triggered with event:", JSON.stringify(event));
-  const segment = AWSXRay.getSegment();
-
-
 
   await init();
-  const messages = (event.Records || []).map(r => JSON.parse(r.body));
-  console.log(`📦 Total messages received: ${messages.length}`);
 
   const results = await Promise.allSettled(
-    messages.map(msg =>
-      AWSXRay.captureAsyncFunc(`fromSqsToSageMaker_${msg.traceId}`, async (sub) => {
+    (event.Records || []).map(record => {
+      const msg = JSON.parse(record.body);
+      const traceHeaderStr = record.messageAttributes?.['X-Amzn-Trace-Id']?.stringValue;
+
+      let baseSegment = AWSXRay.getSegment(); // 기본 세그먼트
+
+      // 💡 메시지에 trace header가 있으면 새로운 루트 세그먼트로 설정
+      if (traceHeaderStr) {
+        const traceData = AWSXRay.utils.processTraceData(traceHeaderStr);
+        baseSegment = new AWSXRay.Segment('SQS->Lambda', traceData.Root, traceData.Parent);
+        AWSXRay.setSegment(baseSegment);
+      }
+
+      return AWSXRay.captureAsyncFunc(`fromSqsToSageMaker_${msg.traceId}`, async (sub) => {
         try {
           sub.addMetadata('startTime', new Date().toISOString());
+          console.log(`🚀1️⃣ Processing message with traceId: ${msg.traceId} userSub: ${msg.userSub}`);
 
-
-
-          console.log(`🚀1️⃣ Processing message with traceId: ${msg.traceId}`);
-          console.log(`🚀2️⃣ Processing message with userSub: ${msg.userSub}`);
           const result = await invokeSageMaker(sageMakerEndpoint, msg.features);
-
           sub.addMetadata("traceId", msg.traceId);
           sub.addMetadata("prediction", result.prediction);
 
@@ -120,11 +124,7 @@ exports.receive = async (event) => {
             const fcmTokens = await getFcmTokens(msg.userSub);
             console.log("📱 Retrieved FCM tokens:", fcmTokens);
 
-
-
             await publishSns(topicArn, fcmTokens, msg.traceId);
-
-
             sub.addMetadata("sns", "sent");
           } else {
             console.log(`ℹ️ Prediction below threshold for traceId ${msg.traceId}`);
@@ -133,16 +133,17 @@ exports.receive = async (event) => {
 
           sub.addMetadata('finishTime', new Date().toISOString());
           return { traceId: msg.traceId, status: "fulfilled" };
-          
+
         } catch (err) {
           console.error(`❌ Error processing traceId ${msg.traceId}:`, err);
           sub.addError(err);
           return { traceId: msg.traceId, status: "rejected", reason: err.message };
         } finally {
           sub.close();
+          baseSegment.close(); // 🔚 루트 세그먼트도 닫아줌
         }
-      })
-    )
+      });
+    })
   );
 
   const failed = results.filter(r => r.status === "rejected");
@@ -154,6 +155,6 @@ exports.receive = async (event) => {
   console.log("✅ 모든 메시지 정상 처리 완료");
   return {
     statusCode: 200,
-    body: JSON.stringify({ received: messages.length }),
+    body: JSON.stringify({ received: event.Records.length }),
   };
 };

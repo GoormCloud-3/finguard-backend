@@ -64,7 +64,7 @@ module.exports.handler = async (event, context) => {
   //const traceId = uuidv4(); // 고유한 트랜잭션 trace ID 생성
   const segment = AWSXRay.getSegment();
   const traceId = segment.trace_id;
-  console.log("🚨createTransaction :: traceId :: ", traceId);
+  console.log("traceId: ", traceId)
 
   try {
     await init();
@@ -96,8 +96,6 @@ module.exports.handler = async (event, context) => {
     }
     fraudCheckSubsegment.addMetadata('finishTime', new Date().toISOString());
     fraudCheckSubsegment.close();        // ✅ 반드시 닫기!
-
-
 
 
     const myAccountCheckSubsegment = segment.addNewSubsegment('CREATE TRANSACTION LAMBDA :: Check My Account');
@@ -296,6 +294,12 @@ module.exports.handler = async (event, context) => {
       const command = new SendMessageCommand({
         QueueUrl: queueUrl,
         MessageBody: JSON.stringify({ userSub, traceId, features }),
+        MessageAttributes: {
+          'X-Amzn-Trace-Id': {
+              DataType: 'String',
+              StringValue: traceHeader,
+          }
+        },
         MessageGroupId: "trade-group", // FIFO 큐
         MessageDeduplicationId: dedupId, // 고유 traceId 필요
       });
